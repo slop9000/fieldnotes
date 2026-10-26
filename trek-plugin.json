@@ -2,7 +2,7 @@
   "id": "fieldnotes",
   "name": "Fieldnotes",
   "description": "A private Markdown library with explicit trip sharing, live references and frozen travel copies.",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "apiVersion": 1,
   "type": "page",
   "author": "Xuyu Wang",
@@ -11,6 +11,10 @@
   "nativeModules": false,
   "permissions": ["db:own", "db:read:trips", "db:read:files", "db:read:files:content", "db:meta", "db:read:users", "hook:user-data", "mcp:tools", "http:outbound"],
   "operatorEgress": true,
+  "settings": [{
+    "key": "mcp_access_code", "label": "MCP access code", "input_type": "password", "scope": "user", "secret": true,
+    "hint": "Lets MCP clients read and write your Fieldnotes. Create the code under MCP access in the Fieldnotes page and paste it here."
+  }],
   "capabilities": {
     "provides": ["trip"],
     "mcpTools": [{
@@ -21,6 +25,81 @@
         "required": ["trip_id"], "additionalProperties": false
       },
       "annotations": {"destructiveHint": false}
+    }, {
+      "name": "list_folders",
+      "description": "List the Fieldnotes library folders the user can see, with their id, parent_id, name and role. With trip_id, list that trip's own Fieldnotes folders instead. Needs the user's Fieldnotes access code in the plugin's personal setting \"MCP access code\".",
+      "inputSchema": {
+        "type": "object", "properties": {
+          "trip_id": {"type": "integer", "minimum": 1, "description": "List the folders of this trip instead of the library."}
+        },
+        "additionalProperties": false
+      },
+      "annotations": {"readOnlyHint": true, "destructiveHint": false}
+    }, {
+      "name": "list_notes",
+      "description": "List the user's own and shared Fieldnotes notes without their body: id, title, properties, tags, version, folder_id and dates. Filter by folder or by a search in titles, text and property values; pages hold 7 notes, continue with next_offset. Needs the user's Fieldnotes access code in the plugin's personal setting \"MCP access code\".",
+      "inputSchema": {
+        "type": "object", "properties": {
+          "folder_id": {"type": "string", "format": "uuid", "description": "Only notes directly in this library folder."},
+          "q": {"type": "string", "maxLength": 120, "description": "Case-insensitive text to search for."},
+          "offset": {"type": "integer", "minimum": 0, "description": "Position to continue from, as next_offset returned it."},
+          "sort": {"type": "string", "enum": ["updated", "created", "name"]},
+          "order": {"type": "string", "enum": ["desc", "asc"]}
+        },
+        "additionalProperties": false
+      },
+      "annotations": {"readOnlyHint": true, "destructiveHint": false}
+    }, {
+      "name": "read_note",
+      "description": "Read one Fieldnotes note in full: Markdown content, properties, folder and its current version, which save_note needs to update it. Needs the user's Fieldnotes access code in the plugin's personal setting \"MCP access code\".",
+      "inputSchema": {
+        "type": "object", "properties": {"note_id": {"type": "string", "format": "uuid"}},
+        "required": ["note_id"], "additionalProperties": false
+      },
+      "annotations": {"readOnlyHint": true, "destructiveHint": false}
+    }, {
+      "name": "create_folder",
+      "description": "Create a private Fieldnotes library folder, optionally inside a parent folder the user can edit. With trip_id, create a folder in that trip's Fieldnotes instead, which needs edit rights on the trip. Needs the user's Fieldnotes access code in the plugin's personal setting \"MCP access code\".",
+      "inputSchema": {
+        "type": "object", "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 80},
+          "parent_id": {"type": "string", "format": "uuid", "description": "Parent folder, from list_folders with the same trip_id."},
+          "icon": {"type": "string", "maxLength": 8, "description": "Optional emoji or short text."},
+          "trip_id": {"type": "integer", "minimum": 1, "description": "Create the folder in this trip instead of the library."}
+        },
+        "required": ["name"], "additionalProperties": false
+      },
+      "annotations": {"readOnlyHint": false, "destructiveHint": false}
+    }, {
+      "name": "save_note",
+      "description": "Create a private Fieldnotes note, or replace the title, Markdown content and optionally properties of one the user can edit. Updating needs note_id and the version from read_note; if the note changed since, the save is refused and the note must be read again. Needs the user's Fieldnotes access code in the plugin's personal setting \"MCP access code\".",
+      "inputSchema": {
+        "type": "object", "properties": {
+          "note_id": {"type": "string", "format": "uuid", "description": "The note to update; omit to create one."},
+          "version": {"type": "integer", "minimum": 1, "description": "Required with note_id: the version read_note returned."},
+          "title": {"type": "string", "minLength": 1, "maxLength": 160},
+          "content": {"type": "string", "maxLength": 24000, "description": "Markdown body. On update it replaces the whole body."},
+          "properties": {"type": "array", "maxItems": 30, "items": {"type": "object"},
+            "description": "Typed properties in the shape read_note returns. Omit to keep the stored ones."},
+          "folder_id": {"type": "string", "format": "uuid", "description": "Library folder for a new note; not used on update."}
+        },
+        "required": ["title", "content"], "additionalProperties": false
+      },
+      "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false}
+    }, {
+      "name": "add_note_to_trip",
+      "description": "Share a Fieldnotes note with a trip the user can edit: live follows later edits (owners, or anyone for a public note), snapshot keeps a copy of the current version. Optionally place it in one of the trip's folders and on one of its days. Needs the user's Fieldnotes access code in the plugin's personal setting \"MCP access code\".",
+      "inputSchema": {
+        "type": "object", "properties": {
+          "note_id": {"type": "string", "format": "uuid"},
+          "trip_id": {"type": "integer", "minimum": 1},
+          "mode": {"type": "string", "enum": ["live", "snapshot"]},
+          "trip_folder_id": {"type": "string", "format": "uuid", "description": "A folder from list_folders with this trip_id."},
+          "day_id": {"type": "integer", "minimum": 1, "description": "A day of this trip."}
+        },
+        "required": ["note_id", "trip_id", "mode"], "additionalProperties": false
+      },
+      "annotations": {"readOnlyHint": false, "destructiveHint": false}
     }]
   }
 }

@@ -9,6 +9,7 @@ const {
 } = require('../shared/limits.json');
 const { createAssets } = require('./assets.cjs');
 const { createCollab, personColor } = require('./collab.cjs');
+const { createMcp } = require('./mcp.cjs');
 
 // `message` is an English template; `{name}` placeholders are filled from `params` here and again, translated, by the client.
 class Problem extends Error {
@@ -395,6 +396,9 @@ async function initialize(ctx) {
     resolved_at TEXT, resolved_by INTEGER
   ); CREATE INDEX trip_note_comments_note ON trip_note_comments(trip_id, note_id, created_at);
   CREATE INDEX trip_note_comments_author ON trip_note_comments(author_id);`);
+  await ctx.db.migrate('015_mcp_access_codes', `CREATE TABLE mcp_access_codes (
+    user_id INTEGER PRIMARY KEY, code_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL
+  );`);
 }
 
 const roleValue = (role) => {
@@ -1271,6 +1275,7 @@ async function listNotes(ctx, userId, { search = '', offset = 0, publicOnly = fa
 const uploads = createAssets({ fail });
 const collab = createCollab({ fail, id, editable, noteFields, propertyFields, noteIcon,
   referenceOps: uploads.referenceOps, sweep: uploads.sweep });
+const mcp = createMcp({ fail, problemOf, handle, tripAction });
 
 async function handle(action, req, ctx) {
   const userId = actor(req);
@@ -1289,6 +1294,7 @@ async function handle(action, req, ctx) {
     return tripAction({ ...body, ...query }, ctx, userId);
   }
   if (action === 'collab') return collab.action(body, ctx, userId);
+  if (action === 'mcp_access') return mcp.access(body, ctx, userId);
   // Visibility is owner-only and outside the shared document, so co-editing never changes who can read a note.
   if (action === 'note_settings') {
     const note = await owned(ctx, userId, body.id);
@@ -1365,6 +1371,7 @@ async function handle(action, req, ctx) {
 async function deleteUserData(ctx, userId) {
   await ctx.db.tx([
     { sql: 'DELETE FROM trip_note_intents WHERE owner_id = ?', args: [userId] },
+    { sql: 'DELETE FROM mcp_access_codes WHERE user_id = ?', args: [userId] },
     { sql: 'DELETE FROM asset_uploads WHERE owner_id = ?', args: [userId] },
     { sql: 'DELETE FROM note_assets WHERE owner_id = ?', args: [userId] },
     { sql: 'DELETE FROM note_presence WHERE user_id = ? OR note_id IN (SELECT id FROM notes WHERE owner_id = ?)', args: [userId, userId] },
@@ -1401,7 +1408,7 @@ async function deleteUserData(ctx, userId) {
 
 async function exportUserData(ctx, userId) {
   const [notes, noteAssets, folders, noteCollaborators, folderCollaborators,
-    tripLinks, tripSnapshots, tripSnapshotAssets, tripNoteComments] = await Promise.all([
+    tripLinks, tripSnapshots, tripSnapshotAssets, tripNoteComments, mcpAccess] = await Promise.all([
     ctx.db.query('SELECT * FROM notes WHERE owner_id = ?', userId),
     ctx.db.query('SELECT * FROM note_assets WHERE owner_id = ?', userId),
     ctx.db.query('SELECT * FROM folders WHERE owner_id = ?', userId),
@@ -1415,12 +1422,21 @@ async function exportUserData(ctx, userId) {
     ctx.db.query(`SELECT a.* FROM snapshot_assets a JOIN trip_note_links l USING (trip_id, note_id)
       WHERE l.source_owner_id = ? OR l.linked_by = ?`, userId, userId),
     ctx.db.query('SELECT * FROM trip_note_comments WHERE author_id = ?', userId),
+    // The code itself is never stored, and its hash is a credential, not personal data.
+    ctx.db.query('SELECT created_at FROM mcp_access_codes WHERE user_id = ?', userId),
   ]);
   return { notes, noteAssets, folders, noteCollaborators, folderCollaborators, tripLinks, tripSnapshots, tripSnapshotAssets,
-    tripComments: tripNoteComments };
+    tripComments: tripNoteComments, mcpAccess };
 }
 
 const json = (status, value) => ({ status, headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) });
+
+// An expected failure, including the host's permission refusals; null for a crash.
+function problemOf(error) {
+  return error instanceof Problem ? error
+    : /RESOURCE_FORBIDDEN|PERMISSION_DENIED/.test(error?.message) ? new Problem(403, 'You do not have permission to do this.')
+      : error?.status >= 400 && error.status < 500 ? new Problem(error.status, String(error.message)) : null;
+}
 
 // TREK's frame bridge hands the page only "Request failed with status code N", never the body, so an expected failure
 // travels as a 200 envelope that the client turns back into a translated error. Crashes stay real 500s.
@@ -1428,12 +1444,10 @@ async function respond(fn) {
   try { return json(200, await fn()); }
   catch (error) {
     console.error('[Fieldnotes] request failed:', error instanceof Error ? error.stack : String(error));
-    const problem = error instanceof Problem ? error
-      : /RESOURCE_FORBIDDEN|PERMISSION_DENIED/.test(error?.message) ? new Problem(403, 'You do not have permission to do this.')
-        : error?.status >= 400 && error.status < 500 ? new Problem(error.status, String(error.message)) : null;
+    const problem = problemOf(error);
     if (!problem) return json(500, { error: 'Request failed. Try again or check the plugin logs.' });
     return json(200, { error: problem.message, status: problem.status, template: problem.template, params: problem.params });
   }
 }
 
-module.exports = { initialize, handle, tripAction, respond, deleteUserData, exportUserData };
+module.exports = { initialize, handle, tripAction, respond, deleteUserData, exportUserData, mcp };

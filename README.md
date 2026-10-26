@@ -135,9 +135,15 @@ A note can be brought into any number of trips, each time as a live reference or
 
 <img src="./docs/trip-list.png" alt="A trip's Trip Fieldnotes tab: notes marked as live reference or snapshot, one pinned to a day" width="100%">
 
-### AI assistants
+### MCP tools
 
-An AI assistant connected to TREK can use the `list_trip_notes` tool to read the notes shared with a trip you can access, and answer questions such as "How do we pay for trains in Tokyo on this trip?". It reads with your permissions, cannot see trips you have no access to, and cannot change anything.
+An MCP client connected to TREK can use the `list_trip_notes` tool to read the notes shared with a trip you can access, and answer questions such as "How do we pay for trains in Tokyo on this trip?".
+
+With a personal access code it can also work in your library: `list_folders`, `list_notes`, `read_note`, `create_folder`, `save_note` and `add_note_to_trip`. They follow the same rules as the Fieldnotes page: they only see what you can see, change only what you may edit, and refuse to save over a note that changed since it was read. Deleting, sharing with people and changing visibility stay in the page. To connect:
+
+1. In Fieldnotes, click the key button (**MCP access**) and create a code. It is shown only once.
+2. In TREK, open **Settings → Plugins** and paste it into Fieldnotes' **MCP access code**.
+3. To disconnect, revoke the code in **MCP access**; creating a new code replaces the old one.
 
 ### Other details
 
@@ -167,7 +173,7 @@ Fieldnotes keeps your notes, folders and images to itself and only asks TREK for
 | `db:meta` | Checking that you are allowed to edit a trip before you add, remove or arrange its notes. |
 | `db:read:users` | Showing who else is editing a note with you. |
 | `hook:user-data` | Including your notes when you export your TREK data, and deleting them when your account is deleted. |
-| `mcp:tools` | Letting an AI assistant connected to TREK read the notes shared with a trip you can access. TREK shows this as "Publishes AI tools". |
+| `mcp:tools` | Letting an MCP client connected to TREK read the notes shared with a trip you can access and, with your access code, read and write your notes. TREK shows this as "Publishes AI tools". |
 | `http:outbound` | Showing images that a note links from another website. This stays switched off until an administrator allows that website, and private network addresses are always blocked. |
 
 ## Setup

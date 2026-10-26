@@ -1,7 +1,7 @@
 'use strict';
 
 const { definePlugin } = require('trek-plugin-sdk');
-const { initialize, handle, tripAction, respond, deleteUserData, exportUserData } = require('./service.cjs');
+const { initialize, handle, tripAction, respond, deleteUserData, exportUserData, mcp } = require('./service.cjs');
 
 const endpoints = [
   ['GET', '/notes', 'list'], ['GET', '/folders', 'folders'], ['GET', '/reference', 'reference'], ['GET', '/note', 'read'],
@@ -10,6 +10,7 @@ const endpoints = [
   ['POST', '/upload', 'upload'], ['GET', '/collaborators', 'collaborators'], ['POST', '/collaborator', 'collaborator'],
   ['GET', '/trips', 'trips'], ['POST', '/folder', 'folder'],
   ['POST', '/trip', 'trip'], ['POST', '/collab', 'collab'], ['POST', '/note-settings', 'note_settings'],
+  ['POST', '/mcp-access', 'mcp_access'],
 ];
 
 module.exports = definePlugin({
@@ -24,10 +25,7 @@ module.exports = definePlugin({
     trip: (args, ctx) => respond(() => tripAction(args, ctx)),
   },
   hooks: {
-    mcpToolProvider: {
-      tools: ['list_trip_notes'],
-      callTool: ({ args }, ctx) => tripAction({ trip_id: args.trip_id, action: 'list' }, ctx),
-    },
+    mcpToolProvider: { tools: mcp.tools, callTool: mcp.callTool },
   },
   deleteUserData: ({ userId }, ctx) => deleteUserData(ctx, userId),
   exportUserData: ({ userId }, ctx) => exportUserData(ctx, userId),

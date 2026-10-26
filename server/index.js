@@ -9304,6 +9304,129 @@ var require_collab = __commonJS({
   }
 });
 
+// server/mcp.cjs
+var require_mcp = __commonJS({
+  "server/mcp.cjs"(exports2, module2) {
+    "use strict";
+    var { createHash, randomBytes } = require("node:crypto");
+    var ACCESS_SETTING = "mcp_access_code";
+    var CONNECT = 'Create an access code under "MCP access" in Fieldnotes, then paste it into the personal setting "MCP access code" of the Fieldnotes plugin.';
+    var digest = (code) => createHash("sha256").update(code, "utf8").digest("hex");
+    var as = (userId, body = {}, query = {}) => ({ user: { id: userId }, body, query });
+    var summary = (note) => ({
+      id: note.id,
+      title: note.title,
+      icon: note.icon ?? null,
+      tags: note.tags,
+      properties: note.properties,
+      version: note.version,
+      folder_id: note.folder_id ?? null,
+      owner_id: note.owner_id,
+      visibility: note.visibility,
+      created_at: note.created_at,
+      updated_at: note.updated_at
+    });
+    var failure = (text) => ({ content: [{ type: "text", text }], isError: true });
+    var ToolError = class extends Error {
+    };
+    var refuse = (message) => {
+      throw new ToolError(message);
+    };
+    function createMcp({ fail, problemOf, handle: handle2, tripAction: tripAction2 }) {
+      async function access(input, ctx, userId) {
+        if (input.action === "status") {
+          const [row] = await ctx.db.query("SELECT created_at FROM mcp_access_codes WHERE user_id = ?", userId);
+          return { exists: Boolean(row), created_at: row?.created_at ?? null };
+        }
+        if (input.action === "create") {
+          const code = `fn_${randomBytes(24).toString("base64url")}`;
+          const now = (/* @__PURE__ */ new Date()).toISOString();
+          await ctx.db.exec(`INSERT INTO mcp_access_codes (user_id, code_hash, created_at) VALUES (?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET code_hash = excluded.code_hash, created_at = excluded.created_at`, userId, digest(code), now);
+          return { exists: true, created_at: now, code };
+        }
+        if (input.action === "revoke") {
+          await ctx.db.exec("DELETE FROM mcp_access_codes WHERE user_id = ?", userId);
+          return { exists: false, created_at: null };
+        }
+        fail(400, "Unknown action.");
+      }
+      async function caller(ctx) {
+        if (Number.isSafeInteger(ctx.user?.id) && ctx.user.id > 0) return ctx.user.id;
+        const code = await ctx.settings.get(ACCESS_SETTING);
+        if (typeof code !== "string" || !code.trim()) refuse(`No Fieldnotes access code is set. ${CONNECT}`);
+        const [row] = code.length > 200 ? [] : await ctx.db.query("SELECT user_id FROM mcp_access_codes WHERE code_hash = ?", digest(code.trim()));
+        return row?.user_id ?? refuse(`The Fieldnotes access code is not valid; it may have been revoked or replaced. ${CONNECT}`);
+      }
+      const personal = {
+        async list_folders(args2, ctx, userId) {
+          if (args2.trip_id === void 0) return { folders: await handle2("folders", as(userId), ctx) };
+          return { folders: await handle2("trip", as(userId, { action: "folders", trip_id: args2.trip_id }), ctx) };
+        },
+        async list_notes(args2, ctx, userId) {
+          const page = await handle2("list", as(userId, {}, {
+            q: args2.q,
+            offset: args2.offset,
+            folder_id: args2.folder_id,
+            sort: args2.sort,
+            order: args2.order
+          }), ctx);
+          const next = page.has_more ? { next_offset: (args2.offset || 0) + page.notes.length } : {};
+          return { notes: page.notes.map(summary), has_more: page.has_more, ...next };
+        },
+        read_note: (args2, ctx, userId) => handle2("read", as(userId, {}, { id: args2.note_id }), ctx),
+        create_folder(args2, ctx, userId) {
+          const folder = { name: args2.name, parent_id: args2.parent_id, icon: args2.icon };
+          if (args2.trip_id === void 0) return handle2("folder", as(userId, { ...folder, action: "create" }), ctx);
+          return handle2("trip", as(userId, { ...folder, action: "folder_create", trip_id: args2.trip_id }), ctx);
+        },
+        async save_note(args2, ctx, userId) {
+          const fields = { title: args2.title, content: args2.content, properties: args2.properties };
+          if (args2.note_id === void 0) return summary(await handle2("save", as(userId, { ...fields, folder_id: args2.folder_id }), ctx));
+          if (!Number.isSafeInteger(args2.version)) refuse("Updating a note needs the version that read_note returned.");
+          if (args2.folder_id !== void 0) refuse("folder_id applies only when creating a note.");
+          return summary(await handle2("save", as(userId, { ...fields, id: args2.note_id, version: args2.version }), ctx));
+        },
+        async add_note_to_trip(args2, ctx, userId) {
+          const folderId = args2.trip_folder_id ?? null;
+          if (folderId && !(await handle2("trip", as(userId, { action: "folders", trip_id: args2.trip_id }), ctx)).some((folder) => folder.id === folderId)) fail(404, "Folder not found.");
+          await handle2("link", as(userId, { note_id: args2.note_id, trip_id: args2.trip_id, mode: args2.mode, day_id: args2.day_id ?? null }), ctx);
+          if (folderId) {
+            await handle2("trip", as(userId, { action: "folder_move", trip_id: args2.trip_id, note_id: args2.note_id, folder_id: folderId }), ctx);
+          }
+          return {
+            linked: true,
+            note_id: args2.note_id,
+            trip_id: args2.trip_id,
+            mode: args2.mode,
+            day_id: args2.day_id ?? null,
+            trip_folder_id: folderId
+          };
+        }
+      };
+      const tools = ["list_trip_notes", ...Object.keys(personal)];
+      async function callTool({ name, args: args2 }, ctx) {
+        const input = args2 && typeof args2 === "object" ? args2 : {};
+        if (name === "list_trip_notes") return tripAction2({ trip_id: input.trip_id, action: "list" }, ctx);
+        if (!Object.hasOwn(personal, name)) return failure("Unknown tool.");
+        try {
+          return await personal[name](input, ctx, await caller(ctx));
+        } catch (error) {
+          if (error instanceof ToolError) return failure(error.message);
+          const problem = problemOf(error);
+          if (!problem) throw error;
+          if (problem.status === 409 && name === "save_note") {
+            return failure(`${problem.message} Call read_note for the current version and content, then save again.`);
+          }
+          return failure(problem.message);
+        }
+      }
+      return { access, tools, callTool };
+    }
+    module2.exports = { createMcp, ACCESS_SETTING };
+  }
+});
+
 // server/service.cjs
 var require_service = __commonJS({
   "server/service.cjs"(exports2, module2) {
@@ -9323,6 +9446,7 @@ var require_service = __commonJS({
     } = require_limits();
     var { createAssets } = require_assets();
     var { createCollab, personColor } = require_collab();
+    var { createMcp } = require_mcp();
     var Problem = class extends Error {
       constructor(status, message, params2 = {}) {
         super(message.replace(/\{(\w+)\}/g, (match, name) => String(params2[name] ?? match)));
@@ -9720,6 +9844,9 @@ var require_service = __commonJS({
     resolved_at TEXT, resolved_by INTEGER
   ); CREATE INDEX trip_note_comments_note ON trip_note_comments(trip_id, note_id, created_at);
   CREATE INDEX trip_note_comments_author ON trip_note_comments(author_id);`);
+      await ctx.db.migrate("015_mcp_access_codes", `CREATE TABLE mcp_access_codes (
+    user_id INTEGER PRIMARY KEY, code_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL
+  );`);
     }
     var roleValue = (role) => {
       if (role === "editor") return 2;
@@ -10667,6 +10794,7 @@ var require_service = __commonJS({
       referenceOps: uploads.referenceOps,
       sweep: uploads.sweep
     });
+    var mcp2 = createMcp({ fail, problemOf, handle: handle2, tripAction: tripAction2 });
     async function handle2(action, req, ctx) {
       const userId = actor(req);
       const body = req.body || {};
@@ -10684,6 +10812,7 @@ var require_service = __commonJS({
         return tripAction2({ ...body, ...query }, ctx, userId);
       }
       if (action === "collab") return collab.action(body, ctx, userId);
+      if (action === "mcp_access") return mcp2.access(body, ctx, userId);
       if (action === "note_settings") {
         const note = await owned(ctx, userId, body.id);
         if (!["private", "public"].includes(body.visibility)) fail(400, "Invalid visibility.");
@@ -10790,6 +10919,7 @@ var require_service = __commonJS({
     async function deleteUserData2(ctx, userId) {
       await ctx.db.tx([
         { sql: "DELETE FROM trip_note_intents WHERE owner_id = ?", args: [userId] },
+        { sql: "DELETE FROM mcp_access_codes WHERE user_id = ?", args: [userId] },
         { sql: "DELETE FROM asset_uploads WHERE owner_id = ?", args: [userId] },
         { sql: "DELETE FROM note_assets WHERE owner_id = ?", args: [userId] },
         { sql: "DELETE FROM note_presence WHERE user_id = ? OR note_id IN (SELECT id FROM notes WHERE owner_id = ?)", args: [userId, userId] },
@@ -10837,7 +10967,8 @@ var require_service = __commonJS({
         tripLinks,
         tripSnapshots,
         tripSnapshotAssets,
-        tripNoteComments
+        tripNoteComments,
+        mcpAccess
       ] = await Promise.all([
         ctx.db.query("SELECT * FROM notes WHERE owner_id = ?", userId),
         ctx.db.query("SELECT * FROM note_assets WHERE owner_id = ?", userId),
@@ -10857,7 +10988,9 @@ var require_service = __commonJS({
       WHERE l.source_owner_id = ? OR l.linked_by = ?`, userId, userId),
         ctx.db.query(`SELECT a.* FROM snapshot_assets a JOIN trip_note_links l USING (trip_id, note_id)
       WHERE l.source_owner_id = ? OR l.linked_by = ?`, userId, userId),
-        ctx.db.query("SELECT * FROM trip_note_comments WHERE author_id = ?", userId)
+        ctx.db.query("SELECT * FROM trip_note_comments WHERE author_id = ?", userId),
+        // The code itself is never stored, and its hash is a credential, not personal data.
+        ctx.db.query("SELECT created_at FROM mcp_access_codes WHERE user_id = ?", userId)
       ]);
       return {
         notes,
@@ -10868,27 +11001,31 @@ var require_service = __commonJS({
         tripLinks,
         tripSnapshots,
         tripSnapshotAssets,
-        tripComments: tripNoteComments
+        tripComments: tripNoteComments,
+        mcpAccess
       };
     }
     var json = (status, value) => ({ status, headers: { "content-type": "application/json" }, body: JSON.stringify(value) });
+    function problemOf(error) {
+      return error instanceof Problem ? error : /RESOURCE_FORBIDDEN|PERMISSION_DENIED/.test(error?.message) ? new Problem(403, "You do not have permission to do this.") : error?.status >= 400 && error.status < 500 ? new Problem(error.status, String(error.message)) : null;
+    }
     async function respond2(fn) {
       try {
         return json(200, await fn());
       } catch (error) {
         console.error("[Fieldnotes] request failed:", error instanceof Error ? error.stack : String(error));
-        const problem = error instanceof Problem ? error : /RESOURCE_FORBIDDEN|PERMISSION_DENIED/.test(error?.message) ? new Problem(403, "You do not have permission to do this.") : error?.status >= 400 && error.status < 500 ? new Problem(error.status, String(error.message)) : null;
+        const problem = problemOf(error);
         if (!problem) return json(500, { error: "Request failed. Try again or check the plugin logs." });
         return json(200, { error: problem.message, status: problem.status, template: problem.template, params: problem.params });
       }
     }
-    module2.exports = { initialize: initialize2, handle: handle2, tripAction: tripAction2, respond: respond2, deleteUserData: deleteUserData2, exportUserData: exportUserData2 };
+    module2.exports = { initialize: initialize2, handle: handle2, tripAction: tripAction2, respond: respond2, deleteUserData: deleteUserData2, exportUserData: exportUserData2, mcp: mcp2 };
   }
 });
 
 // server/index.js
 var { definePlugin } = require("trek-plugin-sdk");
-var { initialize, handle, tripAction, respond, deleteUserData, exportUserData } = require_service();
+var { initialize, handle, tripAction, respond, deleteUserData, exportUserData, mcp } = require_service();
 var endpoints = [
   ["GET", "/notes", "list"],
   ["GET", "/folders", "folders"],
@@ -10908,7 +11045,8 @@ var endpoints = [
   ["POST", "/folder", "folder"],
   ["POST", "/trip", "trip"],
   ["POST", "/collab", "collab"],
-  ["POST", "/note-settings", "note_settings"]
+  ["POST", "/note-settings", "note_settings"],
+  ["POST", "/mcp-access", "mcp_access"]
 ];
 module.exports = definePlugin({
   onLoad: initialize,
@@ -10924,10 +11062,7 @@ module.exports = definePlugin({
     trip: (args2, ctx) => respond(() => tripAction(args2, ctx))
   },
   hooks: {
-    mcpToolProvider: {
-      tools: ["list_trip_notes"],
-      callTool: ({ args: args2 }, ctx) => tripAction({ trip_id: args2.trip_id, action: "list" }, ctx)
-    }
+    mcpToolProvider: { tools: mcp.tools, callTool: mcp.callTool }
   },
   deleteUserData: ({ userId }, ctx) => deleteUserData(ctx, userId),
   exportUserData: ({ userId }, ctx) => exportUserData(ctx, userId)

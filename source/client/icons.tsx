@@ -1,5 +1,6 @@
 export type IconName = 'folder' | 'folder-plus' | 'folder-drop' | 'note' | 'library' | 'plus' | 'refresh' | 'search' | 'sort' | 'check'
-  | 'trash' | 'edit' | 'settings' | 'more' | 'close' | 'chevron-left' | 'chevron-right' | 'comment' | 'snapshot' | 'reopen';
+  | 'trash' | 'edit' | 'settings' | 'more' | 'close' | 'chevron-left' | 'chevron-right' | 'comment' | 'snapshot' | 'reopen'
+  | 'key';
 export function Icon({ name }: { name: IconName }) {
   const paths = {
     folder: <><path d="M3.5 6.5h5l1.7 2h10.3v9.8a1.7 1.7 0 0 1-1.7 1.7H5.2a1.7 1.7 0 0 1-1.7-1.7z" />
@@ -35,6 +36,7 @@ export function Icon({ name }: { name: IconName }) {
     snapshot: <><path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2L9 5h6l1.5 2h2A1.5 1.5 0 0 1 20 8.5v9
       a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z" />
       <circle cx="12" cy="13" r="3.2" /></>,
+    key: <><circle cx="8" cy="15" r="4" /><path d="m10.8 12.2 8.7-8.7M16.5 6.5l2.5 2.5M14 9l2 2" /></>,
     'chevron-left': <path d="m15 5-7 7 7 7" />,
     'chevron-right': <path d="m9 5 7 7-7 7" />,
   };

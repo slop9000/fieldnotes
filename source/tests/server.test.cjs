@@ -935,13 +935,114 @@ test('companion calls declared dependency export, not a private or impersonated 
   assert.equal(tripManifest.pluginDependencies[0].id, manifest.id);
 });
 
-test('declared MCP tool is wired and fails closed for inaccessible trips', async (t) => {
+test('declared MCP tools are wired and fail closed for inaccessible trips', async (t) => {
   const { owner, host } = await setup(t); const note = await create(owner); await link(owner, note);
   assert.deepEqual(manifest.capabilities.mcpTools.map((tool) => tool.name), main.hooks.mcpToolProvider.tools);
+  assert.ok(manifest.capabilities.mcpTools.length <= 8);
+  assert.ok(manifest.capabilities.mcpTools.every((tool) => tool.inputSchema.additionalProperties === false));
+  assert.deepEqual(manifest.settings.map(({ key, scope, secret }) => ({ key, scope, secret })),
+    [{ key: 'mcp_access_code', scope: 'user', secret: true }]);
   const result = await owner.run(main).hook('mcpToolProvider', 'callTool', { name: 'list_trip_notes', args: { trip_id: 10 } });
   assert.equal(result.notes[0].id, note.id);
   await assert.rejects(host(3).run(main).hook('mcpToolProvider', 'callTool', { name: 'list_trip_notes', args: { trip_id: 10 } }),
     /RESOURCE_FORBIDDEN/);
+});
+
+const accessCode = async (h) => (await h.request('POST', '/mcp-access', { action: 'create' })).data.code;
+const tool = (h, name, args = {}) => h.run(main).hook('mcpToolProvider', 'callTool', { name, args });
+const toolError = (result) => (result?.isError ? result.content[0].text : null);
+
+test('MCP access codes are shown once, stored as a hash, replaced and revoked', async (t) => {
+  const { owner, db } = await setup(t);
+  assert.deepEqual((await owner.request('POST', '/mcp-access', { action: 'status' })).data, { exists: false, created_at: null });
+  const first = await accessCode(owner);
+  assert.match(first, /^fn_[A-Za-z0-9_-]{32}$/);
+  const status = (await owner.request('POST', '/mcp-access', { action: 'status' })).data;
+  assert.equal(status.exists, true); assert.equal(status.code, undefined); assert.ok(status.created_at);
+  const stored = db.prepare('SELECT * FROM mcp_access_codes').all();
+  assert.equal(stored.length, 1); assert.notEqual(stored[0].code_hash, first); assert.doesNotMatch(JSON.stringify(stored), new RegExp(first));
+  const second = await accessCode(owner);
+  assert.notEqual(second, first); assert.equal(db.prepare('SELECT COUNT(*) AS count FROM mcp_access_codes').get().count, 1);
+  const exported = await owner.run(main).exportUserData(1);
+  assert.deepEqual(exported.mcpAccess.map((row) => Object.keys(row)), [['created_at']]);
+  await owner.run(main).deleteUserData(1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM mcp_access_codes').get().count, 0);
+  await accessCode(owner);
+  assert.equal((await owner.request('POST', '/mcp-access', { action: 'revoke' })).data.exists, false);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM mcp_access_codes').get().count, 0);
+  assert.equal((await owner.request('POST', '/mcp-access', { action: 'other' })).status, 400);
+});
+
+test('MCP tools act as the access code owner through the same routes as the page', async (t) => {
+  const { owner, host } = await setup(t);
+  const client = host(1, { userSettings: { mcp_access_code: await accessCode(owner) } });
+  const folder = await tool(client, 'create_folder', { name: 'Transport' });
+  assert.equal(folder.name, 'Transport'); assert.equal(folder.visibility, 'private');
+  assert.deepEqual((await tool(client, 'list_folders')).folders.map((item) => item.id), [folder.id]);
+  const created = await tool(client, 'save_note', { title: 'Rail passes', content: '# Passes\nBuy early.', folder_id: folder.id });
+  assert.equal(created.version, 1); assert.equal(created.folder_id, folder.id); assert.equal(created.content, undefined);
+  const listed = await tool(client, 'list_notes', { folder_id: folder.id });
+  assert.deepEqual(listed.notes.map((note) => [note.id, note.version, note.content]), [[created.id, 1, undefined]]);
+  assert.equal(listed.has_more, false);
+  assert.equal((await tool(client, 'list_notes', { q: 'buy early' })).notes.length, 1);
+  assert.equal((await tool(client, 'read_note', { note_id: created.id })).content, '# Passes\nBuy early.');
+  const updated = await tool(client, 'save_note', { note_id: created.id, version: 1, title: 'Rail passes', content: 'Updated.' });
+  assert.equal(updated.version, 2);
+  assert.equal((await owner.request('GET', '/note', {}, { id: created.id })).data.content, 'Updated.');
+  assert.match(toolError(await tool(client, 'save_note', { note_id: created.id, version: 1, title: 'Stale', content: 'Lost' })),
+    /This note changed\. Reload before saving\. Call read_note/);
+  assert.match(toolError(await tool(client, 'save_note', { note_id: created.id, title: 'No version', content: '' })), /version/);
+  assert.equal((await owner.request('GET', '/note', {}, { id: created.id })).data.content, 'Updated.');
+
+  const tripFolder = await tool(client, 'create_folder', { name: 'Arrival', trip_id: 10 });
+  assert.deepEqual((await tool(client, 'list_folders', { trip_id: 10 })).folders.map((item) => item.id), [tripFolder.id]);
+  const missing = '00000000-0000-4000-8000-000000000000';
+  assert.equal(toolError(await tool(client, 'add_note_to_trip',
+    { note_id: created.id, trip_id: 10, mode: 'live', trip_folder_id: missing })), 'Folder not found.');
+  assert.equal((await readTrip(owner)).data.notes.length, 0);
+  const linked = await tool(client, 'add_note_to_trip',
+    { note_id: created.id, trip_id: 10, mode: 'snapshot', trip_folder_id: tripFolder.id, day_id: 101 });
+  assert.equal(linked.linked, true);
+  const [shared] = (await readTrip(host(2))).data.notes;
+  assert.deepEqual([shared.id, shared.mode, shared.folder_id, shared.day_id], [created.id, 'snapshot', tripFolder.id, 101]);
+  assert.match(toolError(await tool(client, 'add_note_to_trip', { note_id: created.id, trip_id: 10, mode: 'live' })), /Already linked/);
+  assert.equal((await tool(host(2), 'list_trip_notes', { trip_id: 10 })).notes[0].id, created.id);
+});
+
+test('MCP tools refuse callers without a valid code and never cross to another user', async (t) => {
+  const { owner, host } = await setup(t);
+  const note = await create(owner);
+  assert.match(toolError(await tool(owner, 'list_notes')), /No Fieldnotes access code is set\. Create an access code/);
+  assert.match(toolError(await tool(host(1, { userSettings: { mcp_access_code: 'fn_guessed' } }), 'list_notes')), /not valid/);
+  const code = await accessCode(owner);
+  await owner.request('POST', '/mcp-access', { action: 'revoke' });
+  assert.match(toolError(await tool(host(1, { userSettings: { mcp_access_code: code } }), 'read_note', { note_id: note.id })),
+    /not valid; it may have been revoked/);
+
+  const other = host(2, { userSettings: { mcp_access_code: await accessCode(host(2)) } });
+  assert.deepEqual((await tool(other, 'list_notes')).notes, []);
+  assert.equal(toolError(await tool(other, 'read_note', { note_id: note.id })), 'Note not found.');
+  assert.equal(toolError(await tool(other, 'save_note', { note_id: note.id, version: 1, title: 'Taken', content: '' })),
+    'Note not found.');
+  assert.equal(toolError(await tool(other, 'add_note_to_trip', { note_id: note.id, trip_id: 10, mode: 'snapshot' })),
+    'Note not found.');
+  const own = await tool(other, 'save_note', { title: 'Mine', content: 'Only mine.' });
+  assert.equal(own.owner_id, 2);
+  assert.deepEqual((await owner.request('GET', '/notes')).data.notes.map((item) => item.id), [note.id]);
+});
+
+test('MCP write tools keep the trip edit gate and the host trip checks', async (t) => {
+  const { owner, host } = await setup(t);
+  const note = await create(owner); const code = await accessCode(owner);
+  const viewer = host(1, { userSettings: { mcp_access_code: code },
+    trips: { 10: { members: [1], data: { id: 10, user_id: 1 }, days: [{ id: 101, trip_id: 10 }], canEditTrip: false } } });
+  assert.equal(toolError(await tool(viewer, 'add_note_to_trip', { note_id: note.id, trip_id: 10, mode: 'live' })),
+    'You do not have permission to do this.');
+  assert.equal(toolError(await tool(viewer, 'create_folder', { name: 'No write', trip_id: 10 })),
+    'You do not have permission to do this.');
+  assert.equal((await readTrip(owner)).data.notes.length, 0);
+  const outsider = host(3, { userSettings: { mcp_access_code: await accessCode(host(3)) } });
+  assert.equal(toolError(await tool(outsider, 'list_folders', { trip_id: 20 })), 'You do not have permission to do this.');
 });
 
 test('unlink preserves original; GDPR hook deletes only the specified owner', async (t) => {
