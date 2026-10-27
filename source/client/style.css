@@ -310,6 +310,12 @@ body.trek-ui,
   background: var(--bg-input); }
 .fn-modal .fn-modal-add-form { margin-top: 0; }
 .fn-modal-add-label { margin-bottom: 7px; color: var(--text-secondary); font-size: 12px; font-weight: 600; }
+.fn-mcp-access > p { margin: 0 0 14px; font-size: 13px; line-height: 1.5; }
+.fn-mcp-access .fn-mcp-access-state { color: var(--text-primary); font-weight: 600; }
+.fn-mcp-access-code { display: flex; gap: 8px; }
+.fn-mcp-access-code .trek-input { flex: 1; min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.fn-mcp-access-actions { justify-content: flex-end; margin-top: 18px; }
+.fn-mcp-access .fn-danger-text { color: var(--danger); }
 [data-theme="dark"] .fn-modal-backdrop { background: color-mix(in oklch, #000 48%, transparent);
   backdrop-filter: blur(8px) saturate(115%); }
 [data-theme="dark"] .fn-modal { border-color: color-mix(in oklch, var(--border-primary) 78%, transparent);

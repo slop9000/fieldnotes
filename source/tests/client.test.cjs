@@ -746,6 +746,32 @@ test('host locale and theme context changes do not discard an in-progress draft'
   assert.ok([...app.doc.querySelectorAll('button')].some((button) => button.textContent === '保存笔记'));
 });
 
+test('MCP access shows a new code once and asks before replacing or revoking it', async (t) => {
+  let stored = null;
+  const app = await ui(t, { invoke: (sub, init) => {
+    if (sub !== '/mcp-access') return undefined;
+    if (init.body.action === 'create') { stored = '2026-10-01T08:00:00.000Z'; return { exists: true, created_at: stored, code: 'fn_secret' }; }
+    if (init.body.action === 'revoke') stored = null;
+    return { exists: Boolean(stored), created_at: stored };
+  } });
+  const ready = (label) => until(() => [...app.doc.querySelectorAll('.fn-mcp-access button')]
+    .some((button) => button.textContent === label && !button.disabled));
+  app.doc.querySelector('[aria-label="MCP access"]').click();
+  await until(() => app.doc.querySelector('.fn-mcp-access-state')?.textContent === 'No access code yet.');
+  await ready('Create code'); app.click('Create code');
+  await until(() => app.doc.querySelector('#mcp-access-code')?.value === 'fn_secret');
+  assert.match(app.doc.querySelector('.fn-mcp-access-state').textContent, /^Created /);
+  await ready('Replace code'); app.click('Replace code');
+  await until(() => app.confirmations.length === 1);
+  await ready('Revoke code'); app.click('Revoke code');
+  await until(() => app.doc.querySelector('.fn-mcp-access-state')?.textContent === 'No access code yet.');
+  assert.equal(app.confirmations.length, 2); assert.equal(app.doc.querySelector('#mcp-access-code'), null);
+  assert.deepEqual(app.calls.filter((call) => call.sub === '/mcp-access').map((call) => call.body.action),
+    ['status', 'create', 'create', 'revoke']);
+  app.window.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await until(() => !app.doc.querySelector('.fn-mcp-access'));
+});
+
 test('supported TREK locales translate the main editor actions', async (t) => {
   const app = await ui(t, { locale: 'de' }); app.click('Neue Notiz'); await until(() => app.doc.querySelector('#content-editor'));
   assert.ok([...app.doc.querySelectorAll('button')].some((button) => button.textContent === 'Notiz speichern'));

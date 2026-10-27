@@ -14,6 +14,7 @@ import { translate, type Translate } from './i18n';
 import { RequestError, withErrors, type Invoke } from './api';
 import { CollaboratorEditor, useCollaborators, type Collaborator, type Person } from './collaborators';
 import { FolderField, VisibilityField } from './note-fields';
+import { McpAccess } from './mcp-access';
 import { Icon } from './icons';
 import {
   CommentPanel, QuoteButton, clearQuotes, paintQuotes, threadAt, threadsOf, type Anchor, type Comment
@@ -130,6 +131,7 @@ function App() {
   const [publicMode, setPublicMode] = useState(false);
   const [folderMenuKey, setFolderMenuKey] = useState<string | null>(null);
   const [permissionFolderId, setPermissionFolderId] = useState<string | null>(null);
+  const [mcpAccessOpen, setMcpAccessOpen] = useState(false);
   const [dragged, setDragged] = useState<Drag | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [landedKey, setLandedKey] = useState<string | null>(null);
@@ -811,7 +813,11 @@ function App() {
               <Icon name="library" /><span className="fn-visually-hidden">{t('Open library', '打开图书馆')}</span>
             </button>
           </>
-          : <button className="trek-btn trek-btn--primary fn-icon-button" aria-label={t('New note', '新建笔记')} title={t('New note', '新建笔记')}
+          : <><button className="trek-btn trek-btn--secondary fn-icon-button" aria-label={t('MCP access', 'MCP 访问')}
+            title={t('MCP access', 'MCP 访问')} onClick={() => setMcpAccessOpen(true)}>
+            <Icon name="key" /><span className="fn-visually-hidden">{t('MCP access', 'MCP 访问')}</span>
+          </button>
+          <button className="trek-btn trek-btn--primary fn-icon-button" aria-label={t('New note', '新建笔记')} title={t('New note', '新建笔记')}
             disabled={busy} onClick={() => void run(async () => {
               if (await discard()) {
                 setPublicMode(false); setNote(null); setDraft({ ...empty, folder_id: selectedFolderId });
@@ -819,7 +825,7 @@ function App() {
               }
             })}>
             <Icon name="plus" /><span className="fn-visually-hidden">{t('New note', '新建笔记')}</span>
-          </button>}
+          </button></>}
       </div>}
     </header>
     {error && <div className="fn-error" role="alert">{error}</div>}
@@ -1220,6 +1226,8 @@ function App() {
         }}
         onDropQuote={() => setPendingQuote(null)} onClose={() => { setCommentsOpen(false); setActiveThread(null); }} />}
     </div>
+    {mcpAccessOpen && <McpAccess t={t} locale={context?.locale} post={post} confirm={(options) => trek.confirm(options)}
+      onClose={() => setMcpAccessOpen(false)} />}
     {permissionFolder && <div className="fn-modal-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) void closeFolderPermissions();
     }}>
