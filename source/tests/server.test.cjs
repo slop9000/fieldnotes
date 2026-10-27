@@ -76,6 +76,10 @@ async function setup(t) {
           [key.slice(String(n).length + 1), value]));
       },
     };
+    // Like the real host, a trip's member list leaves out its owner.
+    const members = h.ctx.trips.members;
+    h.ctx.trips.members = async (tripId) => (await members(tripId))
+      .filter((member) => member.id !== (extra.trips || trips)[tripId]?.data?.user_id);
     const app = h.run(main);
     h.request = async (method, path, body = {}, query = {}) => {
       return outcome(await app.route({ method, path }, { body, query }));
@@ -390,6 +394,22 @@ test('private notes support explicit editors without granting sharing control', 
     role: 'viewer' })).status, 404);
   assert.equal((await owner.request('POST', '/collaborator', { action: 'remove', note_id: note.id, user_id: 2 })).status, 200);
   assert.equal((await editor.request('GET', '/note', {}, { id: note.id })).status, 404);
+});
+
+test('a trip member can share with the trip owner, whom the host leaves out of the member list', async (t) => {
+  const { host } = await setup(t);
+  const member = host(3);
+  const note = await create(member);
+  const people = await member.request('GET', '/collaborators', {}, { note_id: note.id });
+  assert.deepEqual(people.data.candidates.map((person) => person.id), [1]);
+  assert.equal(people.data.candidates[0].display_name, 'Tangerine');
+  assert.equal((await member.request('POST', '/collaborator', { action: 'add', note_id: note.id, user_id: 1, role: 'editor' })).status, 200);
+  const folder = (await member.request('POST', '/folder', { action: 'create', name: 'Taiwan' })).data;
+  assert.equal((await member.request('POST', '/folder', { action: 'collaborators', folder_id: folder.id })).data.candidates[0].id, 1);
+  assert.equal((await member.request('POST', '/folder', { action: 'collaborator', folder_id: folder.id, user_id: 1,
+    role: 'viewer' })).status, 200);
+  assert.equal((await member.request('POST', '/folder', { action: 'collaborator', folder_id: folder.id, user_id: 2,
+    role: 'viewer' })).status, 403);
 });
 
 test('bulk collaborator role updates commit atomically for notes and folders', async (t) => {
